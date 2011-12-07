@@ -1,0 +1,119 @@
+2010-07-02  Miloslav Trmač  <mitr@redhat.com>
+
+	* python/libusermodule.c (libuser_validate_id_value): New function.
+	(libuser_methods): Add validateIdValue.
+	* python/modules.txt (libuser): Document validateIdValue.
+	* tests/files_test.py (Tests.testValidateIdValue): New test.
+
+	* python/libusermodule.c (initlibuser): Provide VALUE_INVALID_ID.
+	* python/modules.txt (libuser): Document VALUE_INVALID_ID.
+
+diff -u b/python/libusermodule.c b/python/libusermodule.c
+--- b/python/libusermodule.c	Fri Jul 02 17:38:47 2010 +0200
++++ b/python/libusermodule.c	Fri Jul 02 18:35:45 2010 +0200
+@@ -58,6 +58,36 @@
+ 	return ret;
+ }
+ 
++static PyObject *
++libuser_validate_id_value(PyObject *self, PyObject *value)
++{
++	PY_LONG_LONG ll;
++
++	DEBUG_ENTRY;
++	ll = PyLong_AsLongLong(value);
++	if (PyErr_Occurred())
++		goto error;
++
++	if ((id_t)ll != ll) {
++		PyErr_SetString(PyExc_OverflowError, _("Value out of range"));
++		goto error;
++	}
++	if (ll < 0) {
++		PyErr_SetString(PyExc_ValueError, _("ID must not be negative"));
++		goto error;
++	}
++	if (ll == LU_VALUE_INVALID_ID) {
++		PyErr_SetString(PyExc_ValueError, _("Invalid ID value"));
++		goto error;
++	}
++	DEBUG_EXIT;
++	Py_RETURN_NONE;
++
++error:
++	DEBUG_EXIT;
++	return NULL;
++}
++
+ static PyMethodDef libuser_methods[] = {
+ 	{"admin", (PyCFunction) libuser_admin_new, METH_VARARGS | METH_KEYWORDS,
+ 	 "create a new administration context"},
+@@ -71,6 +101,8 @@
+ 	 "create and return a new prompt record"},
+ 	{"getUserShells", libuser_get_user_shells, METH_NOARGS,
+ 	 "return a list of valid shells"},
++	{"validateIdValue", libuser_validate_id_value, METH_O,
++	 "validate an id_t value"},
+ 	{NULL, NULL, 0, NULL},
+ };
+ 
+@@ -145,6 +177,8 @@
+ 
+ 	/* Miscellaneous. */
+ 	PyDict_SetItemString(dict, "UT_NAMESIZE", PyInt_FromLong(UT_NAMESIZE));
++	PyDict_SetItemString(dict, "VALUE_INVALID_ID",
++			     PyLong_FromLongLong(LU_VALUE_INVALID_ID));
+ 
+ 	DEBUG_EXIT;
+ }
+diff -u b/python/modules.txt b/python/modules.txt
+--- b/python/modules.txt	Fri Jul 02 17:38:47 2010 +0200
++++ b/python/modules.txt	Fri Jul 02 18:35:45 2010 +0200
+@@ -28,6 +28,7 @@
+         	- SHADOWWARNING
+ 
+ 		- UT_NAMESIZE
++		- VALUE_INVALID_ID
+ 
+ 	Methods:
+ 		- getUserShells: Returns a list of valid shells for users on
+@@ -48,6 +49,10 @@
+ 			Arguments:
+ 				None.
+ 			Returns: a libuser.Prompt object.
++		- validateIdValue: Verifies an id_t value is in the valid range.
++			Arguments:
++				id_t integer value
++			Returns: None.  Raises an exception on error.
+ 	Types:
+ 		- Admin - An administrative context.
+ 			Methods:
+--- a/tests/files_test.py	Fri Jul 02 17:38:47 2010 +0200
++++ b/tests/files_test.py	Fri Jul 02 18:35:45 2010 +0200
+@@ -1229,6 +1229,26 @@
+         self.a.addGroup(e)
+         self.assertEqual(self.a.enumerateGroupsFull('group31_3:*'), [])
+ 
++    # ValidateIdValue is unrelated to the files module.
++    def testValidateIdValue(self):
++        libuser.validateIdValue(0)
++        libuser.validateIdValue(1)
++        libuser.validateIdValue(500)
++        libuser.validateIdValue(500L)
++        self.assertRaises(TypeError, libuser.validateIdValue, 'abc')
++        # OverflowError if id_t is signed, ValueError otherwise
++        self.assertRaises((ValueError, OverflowError), libuser.validateIdValue,
++                          -1)
++        self.assertRaises((ValueError, OverflowError), libuser.validateIdValue,
++                          -2)
++        self.assertRaises(ValueError, libuser.validateIdValue,
++                          libuser.VALUE_INVALID_ID)
++        if libuser.VALUE_INVALID_ID > 0:
++            libuser.validateIdValue(libuser.VALUE_INVALID_ID - 1)
++            if libuser.VALUE_INVALID_ID < 2 ** 64 - 1:
++                self.assertRaises(OverflowError, libuser.validateIdValue,
++                                  2 ** 64 - 1)
++
+     def tearDown(self):
+         del self.a
+ 

@@ -1,0 +1,45 @@
+Allow passing passwords using a pipe.
+
+2010-02-08  Miloslav Trmač  <mitr@redhat.com>
+
+	* lib/prompt.c (lu_prompt_console): Don't try to modify TTY attributes
+	if stdin is not a TTY.
+
+diff -r 9db7d8120f69 -r 140c73bcf984 lib/prompt.c
+--- a/lib/prompt.c	Wed Feb 03 18:46:45 2010 +0100
++++ b/lib/prompt.c	Mon Feb 08 12:38:31 2010 +0100
+@@ -30,7 +30,7 @@
+ lu_prompt_console(struct lu_prompt *prompts, int count, gpointer calldata,
+ 		  struct lu_error **error)
+ {
+-	int i;
++	int i, is_tty;
+ 
+ 	(void)calldata;
+ 	LU_ERROR_CHECK(error);
+@@ -39,6 +39,7 @@
+ 		g_assert(prompts != NULL);
+ 	}
+ 
++	is_tty = isatty(fileno(stdin));
+ 	for (i = 0; i < count; i++) {
+ 		char buf[LINE_MAX], *p;
+ 		struct termios otermios, ntermios;
+@@ -58,7 +59,7 @@
+ 		prompts[i].value = NULL;
+ 		prompts[i].free_value = NULL;
+ 
+-		if (prompts[i].visible == FALSE) {
++		if (prompts[i].visible == FALSE && is_tty) {
+ 			if (tcgetattr(fileno(stdin), &otermios) == -1) {
+ 				lu_error_new(error, lu_error_terminal,
+ 					     _("error reading terminal attributes"));
+@@ -77,7 +78,7 @@
+ 				     _("error reading from terminal"));
+ 			return FALSE;
+ 		}
+-		if (prompts[i].visible == FALSE) {
++		if (prompts[i].visible == FALSE && is_tty) {
+ 			if (tcsetattr(fileno(stdin), TCSADRAIN, &otermios) == -1) {
+ 				lu_error_new(error, lu_error_terminal,
+ 					     _("error setting terminal attributes"));
