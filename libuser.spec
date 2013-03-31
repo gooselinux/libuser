@@ -2,7 +2,7 @@
 
 Name: libuser
 Version: 0.56.13
-Release: 4%{?dist}
+Release: 4%{?dist}.1
 Group: System Environment/Base
 License: LGPLv2+
 URL: https://fedorahosted.org/libuser/
@@ -16,11 +16,20 @@ Patch1: libuser-0.56.13-ldap-password.patch
 Patch2: libuser-0.56.13-id_t.patch
 # Upstream changeset 276fa0a3078b431e18289285f84a77381b89726c
 Patch3: libuser-0.56.13-crypt_style.patch
+# #643227, upstream libuser-0.57 fixes this differently
+Patch4: libuser-0.56.13-default-pw.patch
+# Upstream changesets 3b86efe54ab0f6805c3c4bccd61c1558e39d84b8 and
+# f4e2b1c38d0be007bb83b6972c2ede31331c6166
+Patch5: libuser-0.56.13-ldap-tests.patch
 BuildRoot: %{_tmppath}/%{name}-root
 BuildRequires: glib2-devel, linuxdoc-tools, pam-devel, popt-devel, python-devel
 BuildRequires: cyrus-sasl-devel, libselinux-devel, openldap-devel
 # To make sure the configure script can find it
 BuildRequires: nscd
+# For Patch4
+BuildRequires: autoconf, automake, gettext-devel, gtk-doc, libtool
+# For %%check
+BuildRequires: openldap-clients, openldap-servers
 Summary: A user and group account administration library
 
 %description
@@ -57,6 +66,18 @@ administering user and group accounts.
 %patch1 -p1 -b .ldap-password
 %patch2 -p1 -b .id_t
 %patch3 -p1 -b .crypt_style
+%patch4 -p1 -b .default-pw
+%patch5 -p1 -b .ldap-tests
+chmod a+x tests/default_pw_test
+
+# For Patch4
+gtkdocize --docdir docs/reference
+libtoolize --force
+autopoint -f
+aclocal -Wall -I m4
+autoconf -Wall
+autoheader -Wall
+automake -Wall --add-missing
 
 %build
 %configure --with-selinux --with-ldap --with-html-dir=%{_datadir}/gtk-doc/html
@@ -72,6 +93,8 @@ make install DESTDIR=$RPM_BUILD_ROOT INSTALL='install -p'
 %find_lang %{name}
 
 %check
+
+make check
 
 # Verify that all python modules load, just in case.
 LD_LIBRARY_PATH=$RPM_BUILD_ROOT/%{_libdir}:${LD_LIBRARY_PATH}
@@ -113,6 +136,10 @@ python -c "import libuser"
 %{_datadir}/gtk-doc/html/*
 
 %changelog
+* Mon Jan 10 2011 Miloslav Trmač <mitr@redhat.com> - 0.56.13-4
+- Correctly mark the LDAP default password value as encrypted (CVE-2011-0002)
+  Resolves: #668020
+
 * Wed Sep  1 2010 Miloslav Trmač <mitr@redhat.com> - 0.56.13-4
 - Change default crypt_style to sha512
   Resolves: #629001

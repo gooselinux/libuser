@@ -1,0 +1,372 @@
+diff -urN libuser/Makefile.am libuser-0.56.13/Makefile.am
+--- libuser/Makefile.am	2010-12-20 22:54:26.776067980 +0100
++++ libuser-0.56.13/Makefile.am	2010-12-20 22:55:55.548854094 +0100
+@@ -16,7 +16,7 @@
+ SUBDIRS = po docs
+ TESTS = tests/config_test.sh tests/files_test tests/pwhash_test tests/utils_test
+ if LDAP
+-TESTS += tests/ldap_test
++TESTS += tests/default_pw_test tests/ldap_test
+ endif
+ 
+ EXTRA_DIST = \
+@@ -27,6 +27,7 @@
+ 	tests/config_import.conf.in tests/config_import2.conf.in \
+ 	tests/config_login.defs tests/config_login2.defs \
+ 	tests/config_override.conf.in tests/config_test.sh \
++	tests/default_pw_test \
+ 	tests/files.conf.in tests/files_test tests/files_test.py \
+ 	tests/ldap.conf.in tests/ldaprc tests/ldap_skel.ldif tests/ldap_test \
+ 	tests/ldap_test.py \
+diff -urN libuser/modules/ldap.c libuser-0.56.13/modules/ldap.c
+--- libuser/modules/ldap.c	2010-12-20 22:54:26.747068049 +0100
++++ libuser-0.56.13/modules/ldap.c	2010-12-20 22:55:30.937913421 +0100
+@@ -981,6 +981,7 @@
+ 		mod_count = 0;
+ 		for (a = attrs; a != NULL; a = a->next) {
+ 			const char *attribute;
++			gboolean is_userpassword;
+ 
+ 			attribute = a->data;
+ 			if (strcasecmp(attribute, DISTINGUISHED_NAME) == 0)
+@@ -999,9 +1000,26 @@
+ 			mod->mod_values
+ 				= g_malloc0((vals->n_values + 1)
+ 					    * sizeof(*mod->mod_values));
++			/* Ugly hack: Detect userPassword values set by
++			   default (by this module and others), and replace them
++			   by LU_CRYPTED "!!" - the default values would be
++			   interpreted as plaintext passwords. */
++			is_userpassword
++				= (g_ascii_strcasecmp(attribute, "userPassword")
++				   == 0);
+ 			for (i = 0; i < vals->n_values; i++) {
+ 				value = g_value_array_get_nth(vals, i);
+ 				mod->mod_values[i] = lu_value_strdup(value);
++				if (is_userpassword
++				    && (strcmp(mod->mod_values[i],
++					       LU_COMMON_DEFAULT_PASSWORD) == 0
++					|| strcmp(mod->mod_values[i], "!!") == 0
++					|| strcmp(mod->mod_values[i], "x")
++					== 0)) {
++					g_free(mod->mod_values[i]);
++					mod->mod_values[i]
++						= g_strdup(LU_CRYPTED "!!");
++				}
+ 			}
+ 			mods[mod_count++] = mod;
+ 		}
+@@ -2210,6 +2228,10 @@
+ 		     const char *user, gboolean is_system,
+ 		     struct lu_ent *ent, struct lu_error **error)
+ {
++	/* Note that this will set LU_USERPASSWORD to
++	   LU_COMMON_DEFAULT_PASSWORD, which is a valid plaintext password in
++	   LDAP.  get_ent_adds () makes sure this value is replaced by an
++	   invalid encrypted hash. */
+ 	return lu_common_user_default(module, user, is_system, ent, error) &&
+ 	       lu_common_suser_default(module, user, is_system, ent, error);
+ }
+@@ -2219,6 +2241,8 @@
+ 		      const char *group, gboolean is_system,
+ 		      struct lu_ent *ent, struct lu_error **error)
+ {
++	/* This sets LU_SHADOWPASSWORD, which is ignored by our backend.
++	   LU_GROUPPASSWORD is not set. */
+ 	return lu_common_group_default(module, group, is_system, ent, error) &&
+ 	       lu_common_sgroup_default(module, group, is_system, ent, error);
+ }
+diff -urN libuser/tests/default_pw.conf.in libuser-0.56.13/tests/default_pw.conf.in
+--- libuser/tests/default_pw.conf.in	1970-01-01 01:00:00.000000000 +0100
++++ libuser-0.56.13/tests/default_pw.conf.in	2010-12-20 22:57:51.002572768 +0100
+@@ -0,0 +1,48 @@
++[defaults]
++# non-portable
++moduledir = @TOP_BUILDDIR@/modules/.libs
++skeleton = /etc/skel
++mailspooldir = /var/mail
++modules = @MODULES@
++create_modules = @MODULES@
++crypt_style = md5
++
++[userdefaults]
++LU_USERNAME = %n
++LU_UIDNUMBER = 500
++LU_GIDNUMBER = %u
++# LU_USERPASSWORD = !!
++# LU_GECOS = %n
++# LU_HOMEDIRECTORY = /home/%n
++# LU_LOGINSHELL = /bin/bash
++
++# LU_SHADOWNAME = %n
++# LU_SHADOWPASSWORD = !!
++# LU_SHADOWLASTCHANGE = %d
++# LU_SHADOWMIN = 0
++# LU_SHADOWMAX = 99999
++# LU_SHADOWWARNING = 7
++# LU_SHADOWINACTIVE = -1
++# LU_SHADOWEXPIRE = -1
++# LU_SHADOWFLAG = -1
++
++[groupdefaults]
++LU_GROUPNAME = %n
++LU_GIDNUMBER = 500
++# LU_GROUPPASSWORD = !!
++# LU_MEMBERUID =
++# LU_ADMINISTRATORUID =
++
++[ldap]
++server = 127.0.0.1:3890
++basedn = dc=libuser
++bindtype = simple
++binddn = cn=Manager,dc=libuser
++
++[files]
++directory = @WORKDIR@/files
++nonroot = yes
++
++[shadow]
++directory = @WORKDIR@/files
++nonroot = yes
+diff -urN libuser/tests/default_pw_test libuser-0.56.13/tests/default_pw_test
+--- libuser/tests/default_pw_test	1970-01-01 01:00:00.000000000 +0100
++++ libuser-0.56.13/tests/default_pw_test	2010-12-20 22:57:51.002572768 +0100
+@@ -0,0 +1,175 @@
++#! /bin/sh
++# Automated default password value regression tester
++#
++# Copyright (c) 2004, 2010 Red Hat, Inc. All rights reserved.
++#
++# This is free software; you can redistribute it and/or modify it under
++# the terms of the GNU Library General Public License as published by
++# the Free Software Foundation; either version 2 of the License, or
++# (at your option) any later version.
++#
++# This program is distributed in the hope that it will be useful, but
++# WITHOUT ANY WARRANTY; without even the implied warranty of
++# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++# General Public License for more details.
++#
++# You should have received a copy of the GNU Library General Public
++# License along with this program; if not, write to the Free Software
++# Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
++#
++# Author: Miloslav Trmač <mitr@redhat.com>
++
++srcdir=$srcdir/tests
++
++workdir=$(pwd)/test_default_pw
++
++trap 'status=$?; rm -rf "$workdir"; exit $status' 0
++trap '(exit 1); exit 1' 1 2 13 15
++
++rm -rf "$workdir"
++mkdir "$workdir"
++
++# Create a SSL key
++/usr/bin/openssl req -newkey rsa:512 -keyout "$workdir"/key1 -nodes \
++    -x509 -days 2 -out "$workdir"/key3 2>/dev/null <<EOF
++.
++.
++.
++.
++.
++127.0.0.1
++.
++EOF
++echo > "$workdir"/key2
++cat "$workdir"/key{1,2,3} > "$workdir"/key.pem
++rm "$workdir"/key{1,2,3}
++
++sed "s|@WORKDIR@|$workdir|g" < "$srcdir"/slapd.conf.in > "$workdir"/slapd.conf
++LIBUSER_CONF=$workdir/libuser.conf
++export LIBUSER_CONF
++# Ugly non-portable hacks
++LD_LIBRARY_PATH=$(pwd)/lib/.libs
++export LD_LIBRARY_PATH
++PYTHONPATH=$(pwd)/python/.libs
++export PYTHONPATH
++
++exit_status=0
++fail() # message
++{
++    echo "Modules $modules: $1" >&2
++    exit_status=1
++}
++
++get_file_password() # file under $workdir/files, entry name
++{
++    echo "Checking $1 $2 ..." >&2
++    awk -F : "\$1 == \"$2\" { print \$2; }" "$workdir/files/$1"
++}
++
++get_ldap_password() # entry filter
++{
++    echo "Checking $1 ..." >&2
++    ldapsearch -LLL -h 127.0.0.1 -p 3890 -x -b 'dc=libuser' "$1" userPassword \
++	| sed -n 's/userPassword:: //p'
++}
++
++valid_password() # encoded value
++{
++    local v=$(python -c "import crypt; print crypt.crypt('password', '$1')")
++    [ "x$v" = "x$1" ]
++}
++
++# Try all concievable combinations and orders, assuming "shadow" requires
++# "files".
++for modules in \
++	files ldap \
++	'files ldap' 'files shadow' 'ldap files' 'shadow files' \
++	'files ldap shadow' 'files shadow ldap' 'ldap files shadow' \
++	'ldap shadow files' 'shadow files ldap' 'shadow ldap files'; do
++
++    # FIXME
++    echo ">>>modules: $modules" >&2
++
++    # Set up an LDAP server and database files
++    mkdir "$workdir"/db "$workdir"/files
++    touch "$workdir"/files/{passwd,shadow,group,gshadow}
++    case $modules in
++	*ldap*)
++	    # FIXME: path
++	    /usr/sbin/slapd \
++		-h 'ldap://127.0.0.1:3890/ ldaps://127.0.0.1:6360/' \
++		-f "$workdir"/slapd.conf &
++	    sleep 3 # Time for slapd to initialize
++	    slapd_pid=$(cat "$workdir"/slapd.pid)
++	    trap 'status=$?; kill $slapd_pid; rm -rf "$workdir"; exit $status' 0
++	    ldapadd -h 127.0.0.1 -p 3890 -f "$srcdir/ldap_skel.ldif" -x \
++		-D cn=Manager,dc=libuser -w password
++	    ;;
++    esac
++
++    # Set up the client
++    sed -e "s|@WORKDIR@|$workdir|g; s|@TOP_BUILDDIR@|$(pwd)|g" \
++	-e "s|@MODULES@|$modules|g" < "$srcdir"/default_pw.conf.in \
++	> "$LIBUSER_CONF"
++
++    # Point "$HOME/ldaprc" to "$srcdir"/ldaprc
++    HOME="$srcdir" python "$srcdir"/default_pw_test.py
++
++    # Test that {passwd,group} handle passwords correctly
++    case $modules in
++	*shadow*)
++	    for pair in 'passwd user_default' 'group group_default'; do
++		if [ "x$(get_file_password $pair)" != xx ]; then
++		    fail "Unexpected $pair password value"
++		fi
++	    done
++	    ;;
++	*files*)
++	    for pair in 'passwd user_default' 'group group_default'; do
++		if [ "x$(get_file_password $pair)" != 'x!!' ]; then
++		    fail "Unexpected $pair password value"
++		fi
++	    done
++	    ;;
++    esac
++
++    # Test that {shadow,gshadow} handle passwords correctly
++    case $modules in
++	*shadow*)
++	    for pair in 'shadow user_default' 'gshadow group_default'; do
++		if [ "x$(get_file_password $pair)" != 'x!!' ]; then
++		    fail "Unexpected $pair password value"
++		fi
++	    done
++	    ;;
++    esac
++
++    # Test that ldap handles password correctly
++    case $modules in
++	*ldap*)
++	    if [ "x$(get_ldap_password uid=user_default)" != xe0NSWVBUfSEh ];
++	    then
++		fail "Unexpected uid=user_default password value"
++	    fi
++	    # The LDAP module does not add a group password by default, but the
++	    # shadow module may do so.  In that case the LDAP module's override
++	    # is triggered and replaces shadow's 'x' with '{CRYPT}!!'.
++	    v=$(get_ldap_password cn=group_default)
++	    if [ "x$v" != x ] && [ "x$v" != xe0NSWVBUfSEh ]; then
++		fail "Unexpected cn=group_default password"
++	    fi
++	    ;;
++    esac
++
++    case $modules in
++	*ldap*)
++	    kill "$slapd_pid"
++	    trap 'status=$?; rm -rf "$workdir"; exit $status' 0
++	    sleep 1 # Time for slapd to terminate
++	    ;;
++    esac
++    slapd_pid=
++    rm -rf "$workdir"/db "$workdir"/files
++done
++
++(exit "$exit_status"); exit "$exit_status"
+diff -urN libuser/tests/default_pw_test.py libuser-0.56.13/tests/default_pw_test.py
+--- libuser/tests/default_pw_test.py	1970-01-01 01:00:00.000000000 +0100
++++ libuser-0.56.13/tests/default_pw_test.py	2010-12-20 22:57:51.003572774 +0100
+@@ -0,0 +1,40 @@
++import crypt
++import libuser
++import unittest
++
++def prompt_callback(prompts):
++    for p in prompts:
++        if p.key == 'ldap/password':
++            p.value = 'password'
++        else:
++            p.value = p.default_value
++
++# This is ugly; ideally we would want a separate connection for each test case,
++# but libssl REALLY doesn't like being unloaded (libcrypto is not unloaded
++# and keeps pointers to unloaded libssl)
++admin = libuser.admin(prompt = prompt_callback)
++
++# Test case order matches the order of function pointers in struct lu_module
++class Tests(unittest.TestCase):
++    def setUp(self):
++        # See the comment at the libuser.admin() call above
++        self.a = admin
++
++    def testGroupAddDefault(self):
++        # Add an group with default attributes
++        e = self.a.initGroup('group_default')
++        self.a.addGroup(e)
++        del e
++
++    def testUserAddDefault(self):
++        # Add an user with default attributes
++        e = self.a.initUser('user_default')
++        self.a.addUser(e, False, False)
++        del e
++
++    def tearDown(self):
++        del self.a
++
++
++if __name__ == '__main__':
++    unittest.main()
+diff -urN libuser/tests/ldap_test.py libuser-0.56.13/tests/ldap_test.py
+--- libuser/tests/ldap_test.py	2010-12-20 22:54:26.776067980 +0100
++++ libuser-0.56.13/tests/ldap_test.py	2010-12-20 22:54:31.193057344 +0100
+@@ -65,6 +65,7 @@
+         e = self.a.lookupUserByName('user6_1')
+         self.assert_(e)
+         self.assertEqual(e[libuser.USERNAME], ['user6_1'])
++        self.assertEqual(e[libuser.USERPASSWORD], ['{CRYPT}!!'])
+ 
+     def testUserAdd2(self):
+         # A maximal case
+@@ -604,6 +605,7 @@
+         e = self.a.lookupGroupByName('group21_1')
+         self.assert_(e)
+         self.assertEqual(e[libuser.GROUPNAME], ['group21_1'])
++        self.assertRaises(KeyError, lambda x: x[libuser.GROUPPASSWORD], e)
+ 
+     def testGroupAdd2(self):
+         # A maximal case

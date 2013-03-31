@@ -1,0 +1,46 @@
+Make the tests run with current openldap again
+
+2010-08-26  Miloslav Trmač  <mitr@redhat.com>
+
+	* tests/slapd.conf.in: Make the tests run with current openldap again.
+diff --git a/tests/slapd.conf.in b/tests/slapd.conf.in
+--- a/tests/slapd.conf.in
++++ b/tests/slapd.conf.in
+@@ -2,7 +2,6 @@
+ include         /etc/openldap/schema/cosine.schema
+ include         /etc/openldap/schema/inetorgperson.schema
+ include         /etc/openldap/schema/nis.schema
+-include         /etc/openldap/schema/redhat/autofs.schema
+ 
+ allow bind_v2
+ 
+Make the LDAP test work on Fedora 14.
+
+2010-12-14  Miloslav Trmač  <mitr@redhat.com>
+
+	* tests/ldap_test: Don't run (openssl req) in batch mode so that we
+	can specify a host name.  Use "127.0.0.1" as host name to fix CN
+	mismatches, "localhost" when connecting is apparently replaced by the
+	actual host name.
+
+diff -r fac00b9bb02b -r f4e2b1c38d0b tests/ldap_test
+--- a/tests/ldap_test	Tue Dec 14 10:46:13 2010 +0100
++++ b/tests/ldap_test	Tue Dec 14 10:50:42 2010 +0100
+@@ -30,14 +30,14 @@
+ mkdir "$workdir"
+ 
+ # Create a SSL key
+-/usr/bin/openssl req -batch -newkey rsa:512 -keyout "$workdir"/key1 -nodes \
+-    -x509 -days 2 -out "$workdir"/key3 <<EOF
++/usr/bin/openssl req -newkey rsa:512 -keyout "$workdir"/key1 -nodes \
++    -x509 -days 2 -out "$workdir"/key3 2>/dev/null <<EOF
+ .
+ .
+ .
+ .
+ .
+-localhost
++127.0.0.1
+ .
+ EOF
+ echo > "$workdir"/key2
